@@ -1,0 +1,665 @@
+/*
+  This Sketch is a work in progress designed to monitor several tempurature points
+  and readout to a TFT Screen. Will run with a menu system.
+*/
+
+// Define TFT Interface Pins
+#define sclk 13
+#define mosi 11
+#define cs   10
+#define dc   8
+#define rst  0  // you can also connect this to the Arduino reset
+#define jsport 3 // Joystick Port
+
+// Define Joystick Variables
+#define Neutral 0
+#define Press 1
+#define Up 2
+#define Down 3
+#define Right 4
+#define Left 5
+
+// Define Analog Sensor Pins
+#define asen0 0
+#define asen1 1 // Upper Power Supply Sensor (+5.0V)
+#define asen2 2
+#define asen3 4
+#define asen4 5
+
+// Define Power Supply Control Interface Pins
+#define upperps 9
+#define lowerps 7
+
+// Define Colors
+// Color definitions
+#define BLACK    0x0000
+#define BLUE     0x001F
+#define RED      0xF800
+#define GREEN    0x07E0
+#define CYAN     0x07FF
+#define MAGENTA  0xF81F
+#define YELLOW   0xFFE0 
+#define WHITE    0xFFFF
+
+// Define LED Case Light Pin
+#define caseleds 2
+
+// Include Libraries
+#include <Adafruit_GFX.h>    // Core graphics library
+#include <Adafruit_ST7735.h> // Hardware-specific library
+#include <SPI.h>  // SPI Interface library
+#include <SD.h> // SD Card Library
+#include <math.h> // Math Library for Tempurature Detection and Conversion
+
+
+// UNO Specific Configuration Options
+Adafruit_ST7735 tft = Adafruit_ST7735(cs, dc, rst);
+
+// Define Constants
+  // Delay Times
+const int rwait = 1000;
+const int swait = 500;
+const int rswait = 250;
+File file;
+boolean pwrstate;
+unsigned long currenttime = 0;
+unsigned long pasttime = 0;
+int wait = 500;
+float uppersupplyvoltage;
+
+// Initialize Global Variable Names
+int fsize; // Font Size (Set it before calling printscreen()
+// Menu Arrays
+char *mmenuopts[] = { "Status", "Config", "Power", "About", "" }; // Main Menu
+char *cmenuopts[] = { "Serial", "Sensors", "Alarms", "Auto-Off", "Write", "" }; // Config Menu Array
+// Current Page and Current selected menu variables
+int curpage = 0;
+int curselmenu;
+int cursen;
+
+// Menu Outline Initial Dimensions
+int recx = 6;
+int recy = 21;
+int recw = 116;
+int rech = 20;
+
+// Global Variables to store Config Options before Writing to Conf File
+  // Serial Options
+boolean serial = true; // Is Serial Enabled
+  // Sensor Enabled
+  boolean senen[] = { true, true, true, false, false };
+  // Sensor Type
+  char *sentype[] = { "tmp", "tmp", "tmp", "tmp", "tmp" };
+  // Sensor Name
+  char *senname[] = { "Sensor 0", "Sensor 1", "Sensor 2", "Sensor 3", "Sensor 4" };
+// Current Option Type
+  char *curopttype = "enable";
+
+void setup() {
+  // TFT ST7735-Black
+  tft.initR(INITR_BLACKTAB);
+  // Blank Screen
+  clearscreen();
+  // Setup Text Settings
+  tft.setTextColor(ST7735_WHITE);
+  tft.setCursor(1, 1);
+  tft.setTextWrap(true);
+  fsize = 1;
+  // Initialize Serial Interface
+  printscreen("Starting Serial...", "beg", ST7735_WHITE);
+  Serial.begin(9600);
+  delay(swait);
+  printscreen("Serial Started!", "", ST7735_WHITE);
+  printscreen("Setting P/S State...", "", ST7735_WHITE);
+  pinMode(upperps, OUTPUT);
+  if(powerstate()){
+    pwrstate = true;
+    printscreen("Supply Online!", "", ST7735_WHITE);
+    digitalWrite(upperps, LOW);
+  }else if(!powerstate()){
+    pwrstate = false;
+    printscreen("Supply Offine!", "", ST7735_WHITE);
+    digitalWrite(upperps, HIGH);
+  }
+  pinMode(caseleds, OUTPUT);
+  digitalWrite(caseleds, HIGH);
+  printscreen("P/S State Set!", "", ST7735_WHITE);
+  printscreen("Starting TFT Test...", "", ST7735_WHITE);
+  delay(rwait);
+  // Start Display Test
+  systemtest();
+  // Change Font Size
+  fsize = 1;
+  printscreen("Test Completed!", "beg", ST7735_WHITE);
+  delay(swait);
+  printscreen("Loading System...", "", ST7735_WHITE);
+  delay(rwait);
+  clearscreen();
+  curselmenu = 0;
+  genmenu();
+}
+
+void loop() {
+  safetynet();
+  if(curpage == 0){
+    fstat();
+  }else if(curpage == 40){
+    fstat();
+  }
+  int joy = CheckJoystick();
+  if(joy){
+  switch (joy)
+  {
+    case Left:
+      if(curpage==10){
+       if(serial){
+        serial = false;
+        serialoptions();
+       }else if(!serial){
+        serial = true; 
+        serialoptions();
+       }
+      }else if(curpage==20){
+        mainmenu();
+      }else if(curpage==30){
+        if(curopttype=="type"){
+          if(sentype[cursen]=="tmp"){
+            sentype[cursen] = "fan";
+          }else if(sentype[cursen]=="fan"){
+            sentype[cursen] = "tmp";
+          }
+        }else if(curopttype=="enable"){
+         if(senen[cursen]==true){
+           senen[cursen] = false;
+         }else if(senen[cursen]==false){
+          senen[cursen] = true; 
+         }
+        }
+        changesensor();
+      }else{
+       curpage = 0;
+       curselmenu = 0;
+       genmenu(); 
+      }
+      break;
+    case Right:
+      if(curpage==10){
+       if(serial){
+        serial = false;
+        serialoptions();
+       }else if(!serial){
+        serial = true; 
+        serialoptions();
+       }
+      }else if(curpage==20){
+        mainmenu();
+      }else if(curpage==30){
+       if(curopttype=="type"){
+          if(sentype[cursen]=="tmp"){
+            sentype[cursen] = "fan";
+          }else if(sentype[cursen]=="fan"){
+            sentype[cursen] = "tmp";
+          }
+        }else if(curopttype=="enable"){
+         if(senen[cursen]==true){
+           senen[cursen] = false;
+         }else if(senen[cursen]==false){
+          senen[cursen] = true; 
+         }         
+        }
+        changesensor();
+      }else{
+       mainmenu();
+      }
+      break;
+    case Up:
+      curselmenu--;
+      if(curpage==20){
+        sensoroptions();
+      }else if(curpage==30){
+        if(curopttype=="type"){
+         curopttype="enable"; 
+        }else if(curopttype=="enable"){
+         curopttype="type"; 
+        }
+        changesensor();
+      }else{
+        genmenu();
+      }
+      break;
+    case Down:
+      curselmenu++;
+      if(curpage==20){
+       sensoroptions();
+     }else if(curpage==30){
+      if(curopttype=="type"){
+       curopttype="enable"; 
+      }else if(curopttype=="enable"){
+       curopttype="type"; 
+      }
+        changesensor();
+      }else{
+        genmenu();
+      }
+      break;
+    case Press:
+      if(curpage==1){ // If we are on the Options Screen
+         switch(curselmenu){
+         case 0:
+          curpage = 10;
+          serialoptions();
+          break;
+         case 1:
+           curpage = 20;
+           curselmenu = 0;
+           sensoroptions();
+           break;
+         case 2:
+          alarmoptions();
+          break;
+         case 3:
+          autooffoptions();
+          break;
+       break;
+       }
+      }else if(curpage==10){ // Exiting the Serial Port Configuration Options
+        curpage=0;
+        if(serial){
+          Serial.begin(9600);
+          if(Serial){
+           popup("Serial Started!");
+           popup("Setting Saved!");
+           Serial.println("Serial Started");
+          }
+        }else if(!serial){
+          Serial.println("Terminating Serial Connection!");
+          Serial.end();
+          if(Serial){
+            popup("Serial Terminated!");
+            popup("Settings Saved!");
+          }
+          delay(rswait);
+        }
+        genmenu();
+      }else if(curpage==20){
+        curpage = 30;
+        cursen = curselmenu;
+        changesensor();
+      }else if(curpage==30){
+        popup("Settings Saved!");
+        curpage = 20;
+        curselmenu = 0;
+        sensoroptions();
+      }else if(curpage==40){ // We are on Power Supply Menu
+        if(pwrstate){
+          popup("Turning off supply!");
+           delay(100);
+           powerctrl('OFF'); 
+           if(!powerstate){
+              popup("Supply Off!");
+            }
+            delay(250);
+            mainmenu();
+        }else if(!pwrstate){
+          popup("Turning on supply");
+          delay(100);
+         powerctrl('ON');
+         if(powerstate){
+             popup("Supply Off!");
+           }
+         delay(250);
+         mainmenu();
+        }
+      }else{ // If we are leaving the main menu and loading a sub-menu
+        curpage = curselmenu;
+        switch(curselmenu){
+         case 0:
+          showstatus();
+          break;
+         case 1:
+          genmenu();
+          break;
+         case 2:
+          curpage = 40;
+          powersystem();
+          break;
+         case 3:
+           about();
+           break;
+        }
+      }
+      break;
+  }
+  delay(swait);
+  }
+}
+
+  // Display System Test
+void systemtest(){
+  tft.setCursor(1, 1);
+  tft.fillScreen(ST7735_RED);
+  delay(swait);
+  tft.fillScreen(ST7735_GREEN);
+  delay(swait);
+  tft.fillScreen(ST7735_BLUE);
+  delay(swait);
+  int count = 10;
+  for(count; count>=0; count--){
+    tft.fillScreen(ST7735_BLACK);
+    tft.setTextColor(ST7735_WHITE);
+    tft.setTextSize(5);
+    tft.print(count);
+    delay(rswait);
+  }
+  tft.fillScreen(ST7735_BLACK);
+  delay(rwait);
+}
+
+// Print Text To Screen
+void printscreen(char *text, char *curloc, uint16_t color){
+  if(curloc == "beg"){
+    tft.setCursor(1, 1);
+  }
+  tft.setTextSize(fsize);
+  tft.setTextColor(color);
+  tft.println(text);
+  //tft.println("\r");
+}
+
+void clearscreen(){
+  tft.fillScreen(ST7735_BLACK);
+}
+
+// Check for Joystick Input Function
+int CheckJoystick()
+{
+  int joystickState = analogRead(jsport);
+  
+  if (joystickState < 50) return Down;
+  if (joystickState < 150) return Right;
+  if (joystickState < 250) return Press;
+  if (joystickState < 500) return Up;
+  if (joystickState < 650) return Left;
+  return Neutral;
+}
+
+void genmenu(){
+  createheader("OMEGA SYSTEM");
+  int count;
+  switch(curpage){
+   case 0: // Main Menu
+      for(count = 0; count <=6; count++){
+       if(mmenuopts[count]==""){
+         break;
+       }
+       count++;
+         int trecy = (recy * count);
+         tft.drawRect(recx, trecy, recw, rech, ST7735_WHITE);
+       count--;
+         if(curselmenu == count){
+           tft.fillRect((recx + 1), (trecy + 1), (recw - 2), (rech - 2 ), ST7735_BLUE);
+         }
+       tft.setTextColor(ST7735_GREEN);
+       tft.setCursor((recx + 15),(trecy + 3));
+       tft.setTextSize(2);
+       tft.println(mmenuopts[count]);
+      }
+     break;
+   case 1: // Config Menu
+     for(count = 0; count <=6; count++){
+       if(cmenuopts[count]==""){
+         break;
+       }
+       count++;
+         int trecy = (recy * count);
+         tft.drawRect(recx, trecy, recw, rech, ST7735_WHITE);
+       count--;
+         if(curselmenu == count){
+           tft.fillRect((recx + 1), (trecy + 1), (recw - 2), (rech - 2 ), ST7735_BLUE);
+         }
+       tft.setTextColor(ST7735_GREEN);
+       tft.setCursor((recx + 15),(trecy + 3));
+       tft.setTextSize(2);
+       tft.println(cmenuopts[count]);
+      }
+     break;
+  }   
+}
+
+void showstatus(){
+ createheader("System Status");
+}
+
+void serialoptions(){
+  createheader("Serial Options");
+  // Created and Display Status of First Option
+  tft.setCursor(19, 25);
+  fsize = 2;
+  printscreen("Enabled?", "", ST7735_WHITE);
+  tft.drawRect(8, 40, 55, 20, ST7735_WHITE);
+  tft.drawRect(65, 40, 55, 20, ST7735_WHITE);
+  if(serial){
+   tft.fillRect(66, 41, 53, 18, ST7735_RED); 
+  }else if(!serial){
+   tft.fillRect(9, 41, 53, 18, ST7735_RED);
+  }
+  tft.setCursor(25, 43);
+  tft.setTextColor(ST7735_BLACK);
+  printscreen("NO", "", ST7735_WHITE);
+  tft.setCursor(75, 43);
+  tft.setTextColor(ST7735_WHITE);
+  printscreen("YES", "", ST7735_WHITE);
+}
+
+void alarmoptions(){
+  clearscreen();
+  printscreen("Alarm Options", "beg", ST7735_RED);
+}
+
+void autooffoptions(){
+  clearscreen();
+  printscreen("Alarms Options", "beg", ST7735_RED);
+}
+
+void popup(char *message){
+  tft.drawRect(10, 60, 110, 20, ST7735_WHITE);
+  tft.fillRect(11, 61, 108, 18, ST7735_RED);
+  tft.setCursor( 12, 62);
+  fsize=1;
+  printscreen(message, "", ST7735_WHITE);
+  delay(rwait);
+}
+
+void sensoroptions(){
+  createheader("Sensor Options");
+  int count;
+  for(count = 0; count <=4; count++){
+     if(senname[count]==""){
+       break;
+     }
+     count++;
+       int trecy = (recy * count);
+       tft.drawRect(recx, trecy, recw, rech, ST7735_WHITE);
+     count--;
+       if(senen[count]){
+         tft.fillRect((recx + 1), (trecy + 1), (recw - 2), (rech - 2 ), ST7735_BLUE);
+       }else{
+         tft.fillRect((recx + 1), (trecy + 1), (recw - 2), (rech - 2 ), ST7735_RED);
+       }
+     if(curselmenu==count){
+       tft.fillRect((recx + 1), (trecy + 1), (recw - 2), (rech - 2 ), ST7735_WHITE);
+     }
+     tft.setTextColor(ST7735_GREEN);
+     tft.setCursor((recx + 15),(trecy + 3));
+     tft.setTextSize(2);
+     tft.println(senname[count]);
+    }
+ }
+
+void createheader(char *header){
+  clearscreen();
+  // Create Screen Header
+  tft.drawRect(6, 0, 116, 20, ST7735_WHITE);
+  tft.fillRect(7, 1, 114, 18, ST7735_BLUE);
+  tft.setTextSize(1);
+  tft.setCursor(25, 7);
+  tft.setTextColor(ST7735_GREEN, ST7735_BLACK);
+  tft.println(header);
+}
+
+void changesensor(){
+  createheader(senname[cursen]);
+  if(curopttype=="type"){
+    tft.fillRect(0, 21, 130, 45, ST7735_BLUE);
+  }else if(curopttype=="enable"){
+    tft.fillRect(0, 66, 130, 45, ST7735_BLUE);
+  }
+  tft.setCursor(35, 25);
+  fsize = 2;
+  printscreen("TYPE?", "", ST7735_WHITE);
+  tft.drawRect(8, 40, 55, 20, ST7735_WHITE);
+  tft.drawRect(65, 40, 55, 20, ST7735_WHITE);
+  if(sentype[cursen]=="tmp"){
+   tft.fillRect(66, 41, 53, 18, ST7735_RED); 
+  }else if(sentype[cursen]=="fan"){
+   tft.fillRect(9, 41, 53, 18, ST7735_RED);
+  }
+  tft.setCursor(21, 43);
+  tft.setTextColor(ST7735_BLACK);
+  printscreen("FAN", "", ST7735_WHITE);
+  tft.setCursor(71, 43);
+  tft.setTextColor(ST7735_WHITE);
+  printscreen("TEMP", "", ST7735_WHITE);
+  
+  tft.setCursor(19, 70);
+  fsize = 2;
+  printscreen("ENABLED?", "", ST7735_WHITE);
+  tft.drawRect(8, 85, 55, 20, ST7735_WHITE);
+  tft.drawRect(65, 85, 55, 20, ST7735_WHITE);
+  if(senen[cursen]){
+   tft.fillRect(66, 86, 53, 18, ST7735_RED); 
+  }else if(!senen[cursen]){
+   tft.fillRect(9, 86, 53, 18, ST7735_RED);
+  }
+  tft.setCursor(21, 88);
+  tft.setTextColor(ST7735_BLACK);
+  printscreen("NO", "", ST7735_WHITE);
+  tft.setCursor(71, 88);
+  tft.setTextColor(ST7735_WHITE);
+  printscreen("YES", "", ST7735_WHITE);
+}
+
+boolean powerstate(){
+  int senval = analogRead(asen1);
+  float voltage = senval * (5.0 / 1023.0);
+  uppersupplyvoltage = voltage;
+  if(voltage < 2.00){
+    return false;
+  }else{
+    return true;
+  }
+}
+
+void safetynet(){
+  if(pwrstate && !powerstate()){
+    pwrstate = false;
+    updateMenuStatus();
+    popup("Power Failure!");
+    delay(100);
+    updateMenuStatus();
+    popup("Restarting...");
+    digitalWrite(upperps, HIGH);
+    delay(150);
+    updateMenuStatus();
+    digitalWrite(upperps, LOW);
+    delay(250);
+    if(powerstate()){
+      popup("Supply Online!");
+      pwrstate = true;
+      delay(1000);
+      mainmenu();
+    }else if(!powerstate()){
+      pwrstate = true;
+      popup("Failed! Retrying...");
+      mainmenu();
+      safetynet();
+    }
+  }
+}
+
+void powerctrl(char state){
+  switch(state){
+    case 'ON':
+    pwrstate = true;
+      digitalWrite(upperps, LOW);
+      break;
+    case 'OFF':
+    pwrstate = false;
+      digitalWrite(upperps, HIGH);
+      break;
+  }
+}
+
+void powersystem(){
+  createheader("Power Supply");
+  tft.setCursor(25, 25);
+  fsize = 2;
+  if(pwrstate){
+    printscreen("P/S ON!", "", ST7735_WHITE);
+    fsize=1;
+    printscreen("  Press to turn off!", "", ST7735_WHITE);
+  }else if(!pwrstate){
+    printscreen("P/S OFF!", "", ST7735_WHITE);
+    fsize=1;
+    printscreen("  Press to turn on!", "", ST7735_WHITE);
+  }
+}
+
+void mainmenu(){
+ curpage = 0;
+ curselmenu = 0;
+ genmenu();
+}
+
+void about(){
+ createheader("OMEGA SYSTEM");
+ tft.setCursor(0,25);
+ fsize = 1;
+ printscreen("The OMEGA SYSTEM,\ndesigned, coded and\nbuilt by Acidphyx\n", "", ST7735_WHITE);
+ printscreen("OMEGA SYSTEM is\ndesigned to monitor\nvarious aspects of anadvanced computer\nsystem, for safety aswell as esoteric datadisplay.", "", ST7735_WHITE);
+}
+
+void fstat(){
+ pasttime = currenttime;
+ unsigned long currentrun = millis();
+ unsigned long timePassed = currentrun - pasttime;
+ if(timePassed >= wait){
+   currenttime = millis();
+   updateMenuStatus();
+ }else{
+   return;
+ }
+}
+
+void updateMenuStatus(){
+  char* message;
+  boolean state = powerstate();
+  if(uppersupplyvoltage > 2.5){
+    tft.fillRoundRect(5, 115, 15, 8, 3, GREEN);
+    tft.drawRoundRect(5, 115, 15, 8, 3, RED);
+    tft.setTextColor(ST7735_GREEN);
+    message = "V - ONLINE";
+  }else if(uppersupplyvoltage <= 2.5){
+    tft.fillRoundRect(5, 115, 15, 8, 3, RED);
+    tft.drawRoundRect(5, 115, 15, 8, 3, GREEN);
+    tft.setTextColor(ST7735_RED);
+    tft.fillRect(49, 114, 60, 8, BLACK);
+    message = "V - OFFLINE";
+  }
+  tft.drawLine(0, 110, 160, 110, GREEN);
+  tft.fillRect(24, 114, 25, 8, BLACK);
+  tft.setCursor(25, 115);
+  tft.setTextSize(1);
+  tft.print(uppersupplyvoltage);
+  tft.print(message);
+}
