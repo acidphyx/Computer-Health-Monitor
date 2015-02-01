@@ -48,7 +48,6 @@
 #include <Adafruit_GFX.h>    // Core graphics library
 #include <Adafruit_ST7735.h> // Hardware-specific library
 #include <SPI.h>  // SPI Interface library
-#include <SD.h> // SD Card Library
 #include <math.h> // Math Library for Tempurature Detection and Conversion
 
 
@@ -57,25 +56,35 @@ Adafruit_ST7735 tft = Adafruit_ST7735(cs, dc, rst);
 
 // Define Constants
   // Delay Times
-const int rwait = 1000;
-const int swait = 500;
-const int rswait = 250;
-File file;
+#define rwait 1000
+#define swait 500
+#define rswait 250
+
 boolean pwrstate;
 unsigned long currenttime = 0;
 unsigned long pasttime = 0;
 int wait = 500;
 float uppersupplyvoltage;
+unsigned long ctime = 0;
+unsigned long ptime = 0;
+boolean onstatus = false;
+
 
 // Initialize Global Variable Names
 int fsize; // Font Size (Set it before calling printscreen()
 // Menu Arrays
-char *mmenuopts[] = { "Status", "Config", "Power", "About", "" }; // Main Menu
-char *cmenuopts[] = { "Serial", "Sensors", "Alarms", "Auto-Off", "Write", "" }; // Config Menu Array
+char *mmenuopts[] = { "Status", "Options", "Power", "About", "" }; // Main Menu
+char *cmenuopts[] = { "Serial", "Sensors", "Alarms", "Auto-Off", "" }; // Config Menu Array
 // Current Page and Current selected menu variables
 int curpage = 0;
 int curselmenu;
 int cursen;
+// Temperature Matrix
+double tsen[3][12] = {
+  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0},
+  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0},
+  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0}
+};
 
 // Menu Outline Initial Dimensions
 int recx = 6;
@@ -108,30 +117,35 @@ void setup() {
   // Initialize Serial Interface
   printscreen("Starting Serial...", "beg", ST7735_WHITE);
   Serial.begin(9600);
-  delay(swait);
+  delay(rswait);
   printscreen("Serial Started!", "", ST7735_WHITE);
+  delay(rswait);
   printscreen("Setting P/S State...", "", ST7735_WHITE);
+  delay(rswait);
   pinMode(upperps, OUTPUT);
   if(powerstate()){
     pwrstate = true;
     printscreen("Supply Online!", "", ST7735_WHITE);
+    delay(rswait);
     digitalWrite(upperps, LOW);
   }else if(!powerstate()){
     pwrstate = false;
     printscreen("Supply Offine!", "", ST7735_WHITE);
+    delay(rswait);
     digitalWrite(upperps, HIGH);
   }
   pinMode(caseleds, OUTPUT);
   digitalWrite(caseleds, HIGH);
   printscreen("P/S State Set!", "", ST7735_WHITE);
-  printscreen("Starting TFT Test...", "", ST7735_WHITE);
-  delay(rwait);
-  // Start Display Test
-  systemtest();
-  // Change Font Size
-  fsize = 1;
-  printscreen("Test Completed!", "beg", ST7735_WHITE);
   delay(swait);
+//  printscreen("Starting TFT Test...", "", ST7735_WHITE);
+//  delay(rwait);
+//  // Start Display Test
+//  systemtest();
+//  // Change Font Size
+//  fsize = 1;
+//  printscreen("Test Completed!", "beg", ST7735_WHITE);
+//  delay(swait);
   printscreen("Loading System...", "", ST7735_WHITE);
   delay(rwait);
   clearscreen();
@@ -146,6 +160,16 @@ void loop() {
   }else if(curpage == 40){
     fstat();
   }
+  if(onstatus){
+   ptime = ctime;
+   unsigned long currentrun = millis();
+   unsigned long timePassed = currentrun - ptime;
+   if(timePassed >= 15000){
+     ctime = millis();
+     popup("Updating...");
+     showstatus();
+   } 
+ }
   int joy = CheckJoystick();
   if(joy){
   switch (joy)
@@ -179,6 +203,7 @@ void loop() {
       }else{
        curpage = 0;
        curselmenu = 0;
+       onstatus = false;
        genmenu(); 
       }
       break;
@@ -209,6 +234,7 @@ void loop() {
         }
         changesensor();
       }else{
+       onstatus = false;
        mainmenu();
       }
       break;
@@ -224,6 +250,7 @@ void loop() {
         }
         changesensor();
       }else{
+        onstatus = false;
         genmenu();
       }
       break;
@@ -239,6 +266,7 @@ void loop() {
       }
         changesensor();
       }else{
+        onstatus = false;
         genmenu();
       }
       break;
@@ -314,7 +342,9 @@ void loop() {
         curpage = curselmenu;
         switch(curselmenu){
          case 0:
+          popup("Loading...");
           showstatus();
+          onstatus = true;
           break;
          case 1:
           genmenu();
@@ -427,7 +457,19 @@ void genmenu(){
 }
 
 void showstatus(){
+ updatetemps();
  createheader("System Status");
+ tft.setCursor(0,25);
+ fsize=1;
+ tft.print("Fridge: \t");
+ tft.print(tsen[0][6]);
+ tft.print(" `C\n");
+ tft.print("Core Rad: \t");
+ tft.print(tsen[1][6]);
+ tft.print(" `C\n");
+ tft.print("Front EXH: \t");
+ tft.print(tsen[2][6]);
+ tft.print(" `C\n");
 }
 
 void serialoptions(){
@@ -644,10 +686,11 @@ void fstat(){
 void updateMenuStatus(){
   char* message;
   boolean state = powerstate();
-  if(uppersupplyvoltage > 2.5){
+  if(uppersupplyvoltage > 2.0){
     tft.fillRoundRect(5, 115, 15, 8, 3, GREEN);
     tft.drawRoundRect(5, 115, 15, 8, 3, RED);
     tft.setTextColor(ST7735_GREEN);
+    tft.fillRect(49, 114, 60, 8, BLACK);
     message = "V - ONLINE";
   }else if(uppersupplyvoltage <= 2.5){
     tft.fillRoundRect(5, 115, 15, 8, 3, RED);
@@ -662,4 +705,38 @@ void updateMenuStatus(){
   tft.setTextSize(1);
   tft.print(uppersupplyvoltage);
   tft.print(message);
+  tft.fillRect(0,130,130,20, BLACK);
+  tft.setCursor(25, 135);
+  fsize=1;
+  printscreen("Carpe Noctem", "", ST7735_GREEN);
+  
+}
+
+void updatetemps(){
+ int sensor = 0;
+  for( sensor; sensor<=2; sensor++){
+   int sencount = 0;
+    for( sencount; sencount<=9; sencount++){
+     int sensorpin = tsen[sensor][10];
+     tsen[sensor][sencount] = Thermister(analogRead(sensorpin));
+     delay(200);
+    } 
+  }
+  sensor = 0;
+  for(sensor; sensor<=2; sensor++){
+    int count = 0;
+    for( count; count<=9; count++){
+     tsen[sensor][11] += tsen[sensor][count];
+    }
+    tsen[sensor][11] = tsen[sensor][11] / 5;
+//    tsen[sensor][11] = (tsen[sensor][0] + tsen[sensor][1] + tsen[sensor][2] + tsen[sensor][3] + tsen[sensor][4] + tsen[sensor][5] + tsen[sensor][6] + tsen[sensor][7] + tsen[sensor][8] + tsen[sensor][9]) / 10;
+  }
+}
+
+double Thermister(int RawADC) {
+  double Temp;
+  Temp = log(((10240000/RawADC) - 0));
+  Temp = 1 / (0.001129148 + (0.000234125 * Temp) + (0.0000000876741 * Temp * Temp * Temp));
+  Temp = Temp - 273.15;           // Convert Kelvin to Celcius
+  return Temp;
 }
